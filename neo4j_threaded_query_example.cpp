@@ -1,7 +1,6 @@
 #include <iostream>
 #include <string>
 #include <curl/curl.h>
-#include <thread>
 #include <future>
 #include <vector>
 #include <openssl/evp.h>
@@ -34,8 +33,8 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return size * nmemb;
 }
 
-// Function to run a single Neo4j query and store the result using a promise
-void run_query(const std::string& query, std::promise<std::string> &&result_promise, const std::string& auth_header) {
+// Function to run a single Neo4j query and return the response (or an "Error: ..." string)
+std::string run_query(const std::string& query, const std::string& auth_header) {
     std::string url = "http://localhost:7474/db/neo4j/tx/commit";
     std::string response;
 
@@ -63,10 +62,7 @@ void run_query(const std::string& query, std::promise<std::string> &&result_prom
 
         if (res != CURLE_OK) {
             std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
-            result_promise.set_value("Error: " + std::string(curl_easy_strerror(res)));
-        } else {
-            // Set the result once the query completes
-            result_promise.set_value(response);
+            response = "Error: " + std::string(curl_easy_strerror(res));
         }
 
         // Clean up
@@ -74,8 +70,10 @@ void run_query(const std::string& query, std::promise<std::string> &&result_prom
         curl_slist_free_all(headers);
     } else {
         std::cerr << "Failed to initialize curl" << std::endl;
-        result_promise.set_value("Error: Failed to initialize curl");
+        response = "Error: Failed to initialize curl";
     }
+
+    return response;
 }
 
 int main() {
@@ -95,13 +93,9 @@ int main() {
     // Vector to store the futures of each query result
     std::vector<std::future<std::string>> futures;
 
-    // Start a thread for each query
+    // Start a thread for each query; std::async joins it when its future is read or destroyed
     for (const auto& query : queries) {
-        std::promise<std::string> result_promise;
-        futures.push_back(result_promise.get_future());
-
-        // Run the query asynchronously in a new thread
-        std::thread(run_query, query, std::move(result_promise), auth_header).detach();
+        futures.push_back(std::async(std::launch::async, run_query, query, auth_header));
     }
 
     // Wait for all threads to finish and combine the results
