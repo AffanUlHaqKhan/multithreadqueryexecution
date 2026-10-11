@@ -176,6 +176,16 @@ std::vector<std::string> extractStatements(const nlohmann::json& json_query) {
     return statements;
 }
 
+// Function to wrap a single subquery in a Neo4j HTTP request body.
+// Built with nlohmann::json so quotes/backslashes in the subquery are escaped
+std::string buildRequest(const std::string& subquery) {
+    nlohmann::json request;
+    request["statements"] = nlohmann::json::array({{{"statement", subquery}}});
+    return request.dump();
+}
+
+// main is left out when the file is compiled into the unit tests
+#ifndef UNIT_TEST
 int main() {
     const std::string query = R"({
         "statements" : [
@@ -202,11 +212,7 @@ int main() {
 
     // Start a separate thread for each query
     for (const auto& subquery : subqueries) {
-        // Build the request with nlohmann::json so quotes/backslashes in the subquery are escaped
-        nlohmann::json request;
-        request["statements"] = nlohmann::json::array({{{"statement", subquery}}});
-        std::string fullQuery = request.dump();
-        futures.push_back(std::async(std::launch::async, sendQuery, fullQuery));
+        futures.push_back(std::async(std::launch::async, sendQuery, buildRequest(subquery)));
     }
 
     // Process and handle the results for each statement separately
@@ -221,3 +227,4 @@ int main() {
 
     return 0;
 }
+#endif
