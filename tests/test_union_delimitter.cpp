@@ -45,6 +45,12 @@ TEST(SplitQuery, AllPrefixedIdentifierIsNotTreatedAsAll) {
               Strings({"RETURN 1 AS x", "allNodes RETURN 2"}));
 }
 
+TEST(SplitQuery, DoesNotSplitOnIntersect) {
+    // Cypher has no INTERSECT; only UNION / UNION ALL are split points
+    const std::string q = "RETURN 1 AS x INTERSECT RETURN 2 AS x";
+    EXPECT_EQ(splitQuery({q}), Strings({q}));
+}
+
 TEST(SplitQuery, IgnoresUnionInSingleQuotedString) {
     EXPECT_EQ(splitQuery({"RETURN 'a UNION b' AS x"}), Strings({"RETURN 'a UNION b' AS x"}));
 }
