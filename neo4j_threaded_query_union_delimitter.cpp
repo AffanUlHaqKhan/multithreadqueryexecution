@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cctype>
 #include <curl/curl.h>
 #include <thread>
 #include <future>
@@ -79,36 +80,85 @@ nlohmann::json processSingleResponse(const std::string& result) {
     return response_json;
 }
 
-// Function to split a query by UNION and INTERSECT
+// Helper: true if c can be part of an unquoted Cypher identifier or parameter
+bool isIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+// Helper: case-insensitive match of a whole keyword (e.g. "UNION") at pos.
+// Rejects matches that are part of a longer word or a property access like n.union
+bool matchKeyword(const std::string& s, size_t pos, const std::string& keyword) {
+    if (pos + keyword.size() > s.size()) return false;
+    if (pos > 0 && (isIdentChar(s[pos - 1]) || s[pos - 1] == '.')) return false;
+    for (size_t i = 0; i < keyword.size(); ++i) {
+        if (std::toupper(static_cast<unsigned char>(s[pos + i])) != keyword[i]) return false;
+    }
+    size_t end = pos + keyword.size();
+    return end == s.size() || !isIdentChar(s[end]);
+}
+
+// Helper: strip leading and trailing whitespace
+std::string trim(const std::string& s) {
+    const char* whitespace = " \t\r\n";
+    size_t begin = s.find_first_not_of(whitespace);
+    if (begin == std::string::npos) return "";
+    size_t end = s.find_last_not_of(whitespace);
+    return s.substr(begin, end - begin + 1);
+}
+
+// Function to split each statement into its top-level UNION / UNION ALL branches.
+// UNION inside string literals, `quoted` identifiers, comments and nested
+// (), {}, [] blocks (e.g. CALL { ... UNION ... } subqueries) is left alone.
 std::vector<std::string> splitQuery(const std::vector<std::string>& statements) {
     std::vector<std::string> subqueries;
-    const std::string delimiters[] = {"UNION", "INTERSECT"};
 
     for (const auto& query : statements) {
-        size_t startPos = 0;
-        size_t endPos = query.size();
-        std::string innerQuery = query;
+        size_t start = 0;  // Start of the current branch
+        int depth = 0;     // Nesting level of (), {}, []
+        size_t i = 0;
 
-        // Split the query using UNION or INTERSECT as delimiters
-        while (true) {
-            size_t delimiterPos = std::string::npos;
-            size_t minPos = std::string::npos;
-            
-            for (const auto& delimiter : delimiters) {
-                size_t pos = innerQuery.find(delimiter, startPos);
-                if (pos != std::string::npos && (minPos == std::string::npos || pos < minPos)) {
-                    minPos = pos;
-                    delimiterPos = pos;
+        while (i < query.size()) {
+            char c = query[i];
+
+            if (c == '\'' || c == '"' || c == '`') {
+                // Skip to the closing quote, honouring backslash escapes in strings
+                char quote = c;
+                ++i;
+                while (i < query.size() && query[i] != quote) {
+                    if (query[i] == '\\' && quote != '`') ++i;
+                    ++i;
                 }
+                ++i;
+            } else if (query.compare(i, 2, "//") == 0) {
+                size_t newline = query.find('\n', i);
+                i = (newline == std::string::npos) ? query.size() : newline + 1;
+            } else if (query.compare(i, 2, "/*") == 0) {
+                size_t close = query.find("*/", i + 2);
+                i = (close == std::string::npos) ? query.size() : close + 2;
+            } else if (c == '(' || c == '{' || c == '[') {
+                ++depth;
+                ++i;
+            } else if (c == ')' || c == '}' || c == ']') {
+                --depth;
+                ++i;
+            } else if (depth == 0 && matchKeyword(query, i, "UNION")) {
+                std::string branch = trim(query.substr(start, i - start));
+                if (!branch.empty()) subqueries.push_back(branch);
+
+                // Consume UNION and an optional ALL
+                i += std::string("UNION").size();
+                size_t next = query.find_first_not_of(" \t\r\n", i);
+                if (next != std::string::npos && matchKeyword(query, next, "ALL")) {
+                    i = next + std::string("ALL").size();
+                }
+                start = i;
+            } else {
+                ++i;
             }
-            
-            if (delimiterPos == std::string::npos) break;
-            
-            subqueries.push_back(innerQuery.substr(startPos, delimiterPos - startPos));
-            startPos = delimiterPos + strlen(delimiters[0].c_str());
         }
 
-        subqueries.push_back(innerQuery.substr(startPos));  // Remaining part of the query
+        std::string branch = trim(query.substr(start));  // Remaining part of the query
+        if (!branch.empty()) subqueries.push_back(branch);
     }
 
     return subqueries;
@@ -130,7 +180,7 @@ int main() {
     const std::string query = R"({
         "statements" : [
             {
-                "statement" : "CREATE (n:Person {name: 'Alice'}) RETURN n AS person UNION CREATE (m:Person {name: 'Bob'}) RETURN m AS person INTERSECT CREATE (p:Person {name: 'Charlie'}) RETURN p AS person"
+                "statement" : "CREATE (n:Person {name: 'Alice'}) RETURN n AS person UNION CREATE (m:Person {name: 'Bob'}) RETURN m AS person UNION CREATE (p:Person {name: 'Charlie'}) RETURN p AS person"
             },
             {
                 "statement" : "MATCH (p:Person) RETURN p"
