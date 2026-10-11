@@ -202,7 +202,10 @@ int main() {
 
     // Start a separate thread for each query
     for (const auto& subquery : subqueries) {
-        std::string fullQuery = R"({"statements" : [{"statement" : ")" + subquery + R"("} ]})";
+        // Build the request with nlohmann::json so quotes/backslashes in the subquery are escaped
+        nlohmann::json request;
+        request["statements"] = nlohmann::json::array({{{"statement", subquery}}});
+        std::string fullQuery = request.dump();
         futures.push_back(std::async(std::launch::async, sendQuery, fullQuery));
     }
 
